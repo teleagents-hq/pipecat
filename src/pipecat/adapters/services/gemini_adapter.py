@@ -473,32 +473,18 @@ class GeminiLLMAdapter(BaseLLMAdapter[GeminiLLMInvocationParams]):
     def _merge_parallel_tool_calls_for_thinking(
         self, thought_signature_dicts: list[dict], messages: list[Content]
     ) -> list[Content]:
-        """Merge parallel tool calls into single Content objects when thinking is enabled.
+        """Merge adjacent parallel function calls and responses for thinking models.
 
-        Gemini expects parallel tool calls (multiple function calls made
-        simultaneously) to be in a single Content with multiple function_call
-        Parts. This method takes a list of Content messages, where parallel
-        tool calls may be split across multiple messages, and merges them into
-        single messages.
+        Gemini requires a model turn containing multiple function-call parts to be
+        followed by one user turn containing the same number of function-response
+        parts. Universal context can represent each part as a separate message, so
+        adjacent parts belonging to the same exchange are coalesced here.
 
-        This only has an effect when thought_signatures are present (i.e., when
-        thinking is enabled). When thinking is disabled, merging doesn't matter.
-        When thinking is enabled, there is a guarantee that the first tool call
-        (and only the first) in any batch of parallel tool calls will have a
-        thought_signature. This allows us to distinguish:
+        For thinking models, only the first call in a parallel batch has a thought
+        signature. A later signed call begins a different batch. Non-function
+        messages are exchange boundaries and are never scanned across or reordered.
 
-        - Parallel tool calls: share a single thought_signature (on the first call)
-        - Sequential tool calls: each have their own thought_signature
-
-        Algorithm: A tool call message with a thought_signature starts a new
-        parallel group. Any tool call messages after it without a
-        thought_signature get merged into that group, regardless of what
-        messages appear in between.
-
-        Args:
-            thought_signature_dicts: A list of thought signature dicts, used
-                to determine if the work of merging is necessary.
-            messages: List of Content messages to process.
+        The pass is linear in the number of messages.
 
         Returns:
             List of Content messages with parallel tool calls merged when
@@ -525,47 +511,58 @@ class GeminiLLMAdapter(BaseLLMAdapter[GeminiLLMInvocationParams]):
                 and all(getattr(part, "function_call", None) for part in msg.parts)
             )
 
+        def is_tool_response_message(msg: Content) -> bool:
+            """Check if message contains only function_response parts."""
+            return bool(
+                msg.role == "user"
+                and msg.parts
+                and all(getattr(part, "function_response", None) for part in msg.parts)
+            )
+
         def message_has_thought_signature(msg: Content) -> bool:
             """Check if any part in the message has a thought_signature."""
             if msg.parts is None:
                 return False
             return any(getattr(part, "thought_signature", None) for part in msg.parts)
 
-        merged_messages = []
+        merged_messages: list[Content] = []
         i = 0
 
         while i < len(messages):
             current = messages[i]
 
-            # If this is a tool call message with a thought signature, start merging
+            # An unsigned adjacent call belongs to the signed call's parallel batch.
             if is_tool_call_message(current) and message_has_thought_signature(current):
                 merged_parts = list(current.parts)
-                other_messages = []
                 j = i + 1
 
-                # Scan forward, merging tool calls without signatures, collecting others
-                while j < len(messages):
-                    next_msg = messages[j]
-                    if is_tool_call_message(next_msg):
-                        if message_has_thought_signature(next_msg):
-                            # New parallel group starts, stop here
-                            break
-                        else:
-                            # Merge this call into the current group
-                            merged_parts.extend(next_msg.parts)
-                            j += 1
-                    else:
-                        # Collect non-tool-call message, keep scanning
-                        other_messages.append(next_msg)
-                        j += 1
+                while (
+                    j < len(messages)
+                    and is_tool_call_message(messages[j])
+                    and not message_has_thought_signature(messages[j])
+                ):
+                    merged_parts.extend(messages[j].parts or [])
+                    j += 1
 
-                # Output merged calls, then collected other messages
                 merged_messages.append(Content(role="model", parts=merged_parts))
-                merged_messages.extend(other_messages)
                 i = j
-            else:
-                merged_messages.append(current)
-                i += 1
+                continue
+
+            # Function responses for one parallel batch must share a user turn.
+            if is_tool_response_message(current):
+                merged_parts = list(current.parts)
+                j = i + 1
+
+                while j < len(messages) and is_tool_response_message(messages[j]):
+                    merged_parts.extend(messages[j].parts or [])
+                    j += 1
+
+                merged_messages.append(Content(role="user", parts=merged_parts))
+                i = j
+                continue
+
+            merged_messages.append(current)
+            i += 1
 
         return merged_messages
 

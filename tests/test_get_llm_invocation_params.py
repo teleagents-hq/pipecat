@@ -66,7 +66,7 @@ For BaseLLMAdapter helpers:
 import unittest
 from unittest.mock import patch
 
-from google.genai.types import Content, Part
+from google.genai.types import Content, FunctionCall, FunctionResponse, Part
 
 from pipecat.adapters.schemas.function_schema import FunctionSchema
 from pipecat.adapters.schemas.tools_schema import ToolsSchema
@@ -402,6 +402,102 @@ class TestGeminiGetLLMInvocationParams(unittest.TestCase):
         self.assertEqual(model_msg.role, "model")
         self.assertEqual(len(model_msg.parts), 1)
         self.assertEqual(model_msg.parts[0].text, "I'm doing well, thank you for asking!")
+
+    def test_parallel_function_calls_and_responses_are_merged_symmetrically(self):
+        """Parallel function calls and their responses use matching part counts."""
+        messages = [
+            Content(
+                role="model",
+                parts=[
+                    Part(
+                        function_call=FunctionCall(id="call-1", name="first", args={}),
+                        thought_signature=b"signature",
+                    )
+                ],
+            ),
+            Content(
+                role="model",
+                parts=[Part(function_call=FunctionCall(id="call-2", name="second", args={}))],
+            ),
+            Content(
+                role="user",
+                parts=[
+                    Part(
+                        function_response=FunctionResponse(
+                            id="call-1", name="first", response={"status": "done"}
+                        )
+                    )
+                ],
+            ),
+            Content(
+                role="user",
+                parts=[
+                    Part(
+                        function_response=FunctionResponse(
+                            id="call-2", name="second", response={"status": "done"}
+                        )
+                    )
+                ],
+            ),
+        ]
+
+        merged = self.adapter._merge_parallel_tool_calls_for_thinking(
+            [{"bookmark": {"function_call": "call-1"}}], messages
+        )
+
+        self.assertEqual(len(merged), 2)
+        self.assertEqual([part.function_call.id for part in merged[0].parts], ["call-1", "call-2"])
+        self.assertEqual(
+            [part.function_response.id for part in merged[1].parts], ["call-1", "call-2"]
+        )
+
+    def test_sequential_function_calls_are_not_merged_across_turn_boundaries(self):
+        """An unsigned later call remains separate when another turn intervenes."""
+        messages = [
+            Content(
+                role="model",
+                parts=[
+                    Part(
+                        function_call=FunctionCall(id="call-1", name="first", args={}),
+                        thought_signature=b"signature",
+                    )
+                ],
+            ),
+            Content(
+                role="user",
+                parts=[
+                    Part(
+                        function_response=FunctionResponse(
+                            id="call-1", name="first", response={"status": "done"}
+                        )
+                    )
+                ],
+            ),
+            Content(role="user", parts=[Part(text="Continue the conversation")]),
+            Content(
+                role="model",
+                parts=[Part(function_call=FunctionCall(id="call-2", name="second", args={}))],
+            ),
+            Content(
+                role="user",
+                parts=[
+                    Part(
+                        function_response=FunctionResponse(
+                            id="call-2", name="second", response={"status": "done"}
+                        )
+                    )
+                ],
+            ),
+        ]
+
+        merged = self.adapter._merge_parallel_tool_calls_for_thinking(
+            [{"bookmark": {"function_call": "call-1"}}], messages
+        )
+
+        self.assertEqual(len(merged), 5)
+        self.assertEqual(merged[0].parts[0].function_call.id, "call-1")
+        self.assertEqual(merged[3].parts[0].function_call.id, "call-2")
+        self.assertEqual(merged[2].parts[0].text, "Continue the conversation")
 
     def test_llm_specific_message_filtering(self):
         """Test that Gemini-specific messages are included and others are filtered out."""
