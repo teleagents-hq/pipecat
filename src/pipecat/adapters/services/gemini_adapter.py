@@ -481,8 +481,9 @@ class GeminiLLMAdapter(BaseLLMAdapter[GeminiLLMInvocationParams]):
         adjacent parts belonging to the same exchange are coalesced here.
 
         For thinking models, only the first call in a parallel batch has a thought
-        signature. A later signed call begins a different batch. Non-function
-        messages are exchange boundaries and are never scanned across or reordered.
+        signature. A later signed call begins a different batch. Function calls and
+        responses can be interleaved in universal context; ordinary messages are
+        exchange boundaries and are never scanned across or reordered.
 
         The pass is linear in the number of messages.
 
@@ -531,20 +532,28 @@ class GeminiLLMAdapter(BaseLLMAdapter[GeminiLLMInvocationParams]):
         while i < len(messages):
             current = messages[i]
 
-            # An unsigned adjacent call belongs to the signed call's parallel batch.
+            # Gather one function-only exchange. Universal context can interleave a
+            # parallel batch as call 1, response 1, call 2, response 2.
             if is_tool_call_message(current) and message_has_thought_signature(current):
-                merged_parts = list(current.parts)
+                call_parts = list(current.parts)
+                response_parts: list[Part] = []
                 j = i + 1
 
-                while (
-                    j < len(messages)
-                    and is_tool_call_message(messages[j])
-                    and not message_has_thought_signature(messages[j])
-                ):
-                    merged_parts.extend(messages[j].parts or [])
+                while j < len(messages):
+                    candidate = messages[j]
+                    if is_tool_response_message(candidate):
+                        response_parts.extend(candidate.parts or [])
+                    elif is_tool_call_message(candidate) and not message_has_thought_signature(
+                        candidate
+                    ):
+                        call_parts.extend(candidate.parts or [])
+                    else:
+                        break
                     j += 1
 
-                merged_messages.append(Content(role="model", parts=merged_parts))
+                merged_messages.append(Content(role="model", parts=call_parts))
+                if response_parts:
+                    merged_messages.append(Content(role="user", parts=response_parts))
                 i = j
                 continue
 

@@ -416,10 +416,6 @@ class TestGeminiGetLLMInvocationParams(unittest.TestCase):
                 ],
             ),
             Content(
-                role="model",
-                parts=[Part(function_call=FunctionCall(id="call-2", name="second", args={}))],
-            ),
-            Content(
                 role="user",
                 parts=[
                     Part(
@@ -428,6 +424,10 @@ class TestGeminiGetLLMInvocationParams(unittest.TestCase):
                         )
                     )
                 ],
+            ),
+            Content(
+                role="model",
+                parts=[Part(function_call=FunctionCall(id="call-2", name="second", args={}))],
             ),
             Content(
                 role="user",
