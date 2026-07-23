@@ -516,8 +516,13 @@ class BaseOpenAILLMService(LLMService[OpenAILLMAdapter]):
                         # Keep iterating through the response to collect all the argument fragments
                         arguments += tool_call.function.arguments
                 elif chunk.choices[0].delta.content:
-                    text_generated_signal = True
-                    await self._push_llm_text(chunk.choices[0].delta.content)
+                    content = chunk.choices[0].delta.content
+                    # Some OpenAI-compatible providers emit whitespace alongside
+                    # tool calls. Preserve it for streaming aggregation, but do not
+                    # wait for a TTS lifecycle that the whitespace cannot start.
+                    if content.strip():
+                        text_generated_signal = True
+                    await self._push_llm_text(content)
 
                 # When gpt-4o-audio / gpt-4o-mini-audio is used for llm or stt+llm
                 # we need to get LLMTextFrame for the transcript

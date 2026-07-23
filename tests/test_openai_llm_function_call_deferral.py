@@ -6,6 +6,7 @@
 
 """Tests for node-transition function-call deferral in OpenAI LLM services."""
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -29,6 +30,38 @@ def _make_function_call(name: str, tool_call_id: str) -> FunctionCallFromLLM:
     )
 
 
+class _MockAsyncStream:
+    def __init__(self, chunks: list[SimpleNamespace]):
+        self._chunks = iter(chunks)
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        try:
+            return next(self._chunks)
+        except StopIteration as exc:
+            raise StopAsyncIteration from exc
+
+    async def close(self):
+        pass
+
+
+def _make_chunk(*, content: str | None = None, tool_calls=None) -> SimpleNamespace:
+    return SimpleNamespace(
+        usage=None,
+        model=None,
+        choices=[
+            SimpleNamespace(
+                delta=SimpleNamespace(
+                    content=content,
+                    tool_calls=tool_calls,
+                )
+            )
+        ],
+    )
+
+
 @pytest.mark.asyncio
 async def test_non_transition_call_is_not_deferred_after_generated_text():
     service = _make_service()
@@ -41,6 +74,46 @@ async def test_non_transition_call_is_not_deferred_after_generated_text():
     )
 
     service.run_function_calls.assert_awaited_once_with([function_call])
+    assert service._pending_node_transition_function_calls == []
+
+
+@pytest.mark.asyncio
+async def test_node_transition_runs_immediately_after_whitespace_only_content():
+    service = _make_service()
+    service.register_function(
+        "transition_to_next_node",
+        AsyncMock(),
+        is_node_transition=True,
+    )
+    service.run_function_calls = AsyncMock()
+    service.push_frame = AsyncMock()
+    service.start_ttfb_metrics = AsyncMock()
+    service.stop_ttfb_metrics = AsyncMock()
+    service.get_chat_completions = AsyncMock(
+        return_value=_MockAsyncStream(
+            [
+                _make_chunk(content="\n "),
+                _make_chunk(
+                    tool_calls=[
+                        SimpleNamespace(
+                            index=0,
+                            id="call-transition",
+                            function=SimpleNamespace(
+                                name="transition_to_next_node",
+                                arguments="{}",
+                            ),
+                        )
+                    ]
+                ),
+            ]
+        )
+    )
+
+    await service._process_context(LLMContext())
+
+    function_calls = service.run_function_calls.await_args.args[0]
+    assert len(function_calls) == 1
+    assert function_calls[0].function_name == "transition_to_next_node"
     assert service._pending_node_transition_function_calls == []
 
 
