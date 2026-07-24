@@ -15,6 +15,7 @@ import asyncio
 from typing import Any
 
 from attr import dataclass
+from loguru import logger
 
 from pipecat.observers.base_observer import BaseObserver, FrameProcessed, FramePushed
 
@@ -181,12 +182,20 @@ class WorkerObserver(BaseObserver):
         """Handle frame processing for a single observer."""
         while True:
             data = await queue.get()
-
-            if isinstance(data, _PipelineStartedSignal):
-                await observer.on_pipeline_started()
-            elif isinstance(data, FramePushed):
-                await observer.on_push_frame(data)
-            elif isinstance(data, FrameProcessed):
-                await observer.on_process_frame(data)
-
-            queue.task_done()
+            try:
+                if isinstance(data, _PipelineStartedSignal):
+                    await observer.on_pipeline_started()
+                elif isinstance(data, FramePushed):
+                    await observer.on_push_frame(data)
+                elif isinstance(data, FrameProcessed):
+                    await observer.on_process_frame(data)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception(
+                    "{} failed while processing {}; continuing observer queue",
+                    observer,
+                    type(data).__name__,
+                )
+            finally:
+                queue.task_done()
