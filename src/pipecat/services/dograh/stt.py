@@ -21,6 +21,7 @@ from pipecat.frames.frames import (
     Frame,
     InterimTranscriptionFrame,
     StartFrame,
+    STTMetadataFrame,
     TranscriptionFrame,
     UserStartedSpeakingFrame,
     UserStoppedSpeakingFrame,
@@ -31,13 +32,13 @@ from pipecat.services.dograh.mps_billing import (
     MPS_BILLING_VERSION_KEY,
     MPS_BILLING_VERSION_V2,
     get_correlation_id,
-    uses_mps_billing_v2,
 )
 from pipecat.services.settings import STTSettings
 from pipecat.services.stt_latency import DOGRAH_TTFS_P99
 from pipecat.services.stt_service import STTService
 from pipecat.services.websocket_service import WebsocketService
 from pipecat.transcriptions.language import Language
+from pipecat.turns.user_turn_strategies import ExternalUserTurnStrategies
 from pipecat.utils.time import time_now_iso8601
 from pipecat.utils.tracing.service_decorators import traced_stt
 
@@ -140,6 +141,13 @@ class DograhSTTService(STTService, WebsocketService):
         """
         return self._vad_events
 
+    def service_metadata_frame(self) -> STTMetadataFrame:
+        """Recommend external turn strategies when Dograh emits VAD events."""
+        frame = super().service_metadata_frame()
+        if self._vad_events:
+            frame.user_turn_strategies = ExternalUserTurnStrategies()
+        return frame
+
     async def set_language(self, language: Language):
         """Set the language for speech recognition.
 
@@ -150,12 +158,6 @@ class DograhSTTService(STTService, WebsocketService):
 
     def _get_correlation_id(self) -> str | None:
         return get_correlation_id(
-            explicit_correlation_id=self._correlation_id,
-            start_metadata=self._start_metadata,
-        )
-
-    def _uses_mps_billing_v2(self) -> bool:
-        return uses_mps_billing_v2(
             explicit_correlation_id=self._correlation_id,
             start_metadata=self._start_metadata,
         )
@@ -193,8 +195,7 @@ class DograhSTTService(STTService, WebsocketService):
             correlation_id = self._get_correlation_id()
             if correlation_id:
                 config_msg["correlation_id"] = correlation_id
-                if self._uses_mps_billing_v2():
-                    config_msg[MPS_BILLING_VERSION_KEY] = MPS_BILLING_VERSION_V2
+                config_msg[MPS_BILLING_VERSION_KEY] = MPS_BILLING_VERSION_V2
 
             await ws.send(json.dumps(config_msg))
 
@@ -450,6 +451,12 @@ class DograhSTTService(STTService, WebsocketService):
             frame: The cancel frame.
         """
         await super().cancel(frame)
+        await self._disconnect()
+        self._session_start_time = None
+
+    async def cleanup(self):
+        """Release Dograh STT resources on every pipeline teardown path."""
+        await super().cleanup()
         await self._disconnect()
         self._session_start_time = None
 

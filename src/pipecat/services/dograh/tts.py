@@ -16,11 +16,8 @@ from typing import Any
 from loguru import logger
 
 from pipecat.frames.frames import (
-    CancelFrame,
-    EndFrame,
     ErrorFrame,
     Frame,
-    InterruptionFrame,
     StartFrame,
     TTSAudioRawFrame,
     TTSStartedFrame,
@@ -31,7 +28,6 @@ from pipecat.services.dograh.mps_billing import (
     MPS_BILLING_VERSION_KEY,
     MPS_BILLING_VERSION_V2,
     get_correlation_id,
-    uses_mps_billing_v2,
 )
 from pipecat.services.settings import NOT_GIVEN, TTSSettings, _NotGiven
 from pipecat.services.tts_service import TextAggregationMode, WebsocketTTSService
@@ -193,12 +189,6 @@ class DograhTTSService(WebsocketTTSService):
             start_metadata=self._start_metadata,
         )
 
-    def _uses_mps_billing_v2(self) -> bool:
-        return uses_mps_billing_v2(
-            explicit_correlation_id=self._correlation_id,
-            start_metadata=self._start_metadata,
-        )
-
     async def _connect_websocket(self):
         """Establish the websocket connection to Dograh TTS service."""
         try:
@@ -231,8 +221,7 @@ class DograhTTSService(WebsocketTTSService):
             correlation_id = self._get_correlation_id()
             if correlation_id:
                 config_msg["correlation_id"] = correlation_id
-                if self._uses_mps_billing_v2():
-                    config_msg[MPS_BILLING_VERSION_KEY] = MPS_BILLING_VERSION_V2
+                config_msg[MPS_BILLING_VERSION_KEY] = MPS_BILLING_VERSION_V2
 
             await ws.send(json.dumps(config_msg))
 
@@ -473,8 +462,7 @@ class DograhTTSService(WebsocketTTSService):
                     correlation_id = self._get_correlation_id()
                     if correlation_id:
                         context_msg["correlation_id"] = correlation_id
-                        if self._uses_mps_billing_v2():
-                            context_msg[MPS_BILLING_VERSION_KEY] = MPS_BILLING_VERSION_V2
+                        context_msg[MPS_BILLING_VERSION_KEY] = MPS_BILLING_VERSION_V2
 
                     await self._get_websocket().send(json.dumps(context_msg))
                     self._remote_initialized_context_ids.add(context_id)
@@ -595,18 +583,6 @@ class DograhTTSService(WebsocketTTSService):
         msg = {"type": "flush", "context_id": flush_id}
         await self._websocket.send(json.dumps(msg))
 
-    async def push_frame(self, frame: Frame, direction: FrameDirection = FrameDirection.DOWNSTREAM):
-        """Push a frame and handle state changes.
-
-        Args:
-            frame: The frame to push.
-            direction: The direction to push the frame.
-        """
-        await super().push_frame(frame, direction)
-        if isinstance(frame, (TTSStoppedFrame, InterruptionFrame)):
-            if isinstance(frame, TTSStoppedFrame):
-                await self.add_word_timestamps([("Reset", 0)], self.get_active_audio_context_id())
-
     async def start(self, frame: StartFrame):
         """Start the TTS service.
 
@@ -617,21 +593,3 @@ class DograhTTSService(WebsocketTTSService):
         self._start_metadata = frame.metadata
         self._reset_state()
         await self._connect()
-
-    async def stop(self, frame: EndFrame):
-        """Stop the TTS service and clean up resources.
-
-        Args:
-            frame: The end frame.
-        """
-        await super().stop(frame)
-        await self._disconnect()
-
-    async def cancel(self, frame: CancelFrame):
-        """Cancel the TTS service.
-
-        Args:
-            frame: The cancel frame.
-        """
-        await super().cancel(frame)
-        await self._disconnect()

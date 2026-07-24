@@ -41,6 +41,7 @@ if TYPE_CHECKING:
     from pipecat.processors.aggregators.llm_context import LLMContext, LLMContextMessage, NotGiven
     from pipecat.processors.frame_processor import FrameProcessor
     from pipecat.services.settings import ServiceSettings
+    from pipecat.turns.user_turn_strategies import UserTurnStrategies
     from pipecat.utils.context.llm_context_summarization import LLMContextSummaryConfig
     from pipecat.utils.tracing.tracing_context import TracingContext
 
@@ -1528,9 +1529,15 @@ class ServiceMetadataFrame(SystemFrame):
 
     Parameters:
         service_name: The name of the service broadcasting this metadata.
+        user_turn_strategies: User turn strategies the service recommends, e.g.
+            ``ExternalUserTurnStrategies`` for a service that does its own
+            server-side end-of-turn detection. The user aggregator applies them
+            unless the user passed their own ``user_turn_strategies``, which always
+            wins. ``None`` leaves the defaults in place.
     """
 
     service_name: str
+    user_turn_strategies: UserTurnStrategies | None = field(default=None, kw_only=True)
 
 
 @dataclass
@@ -1550,27 +1557,15 @@ class STTMetadataFrame(ServiceMetadataFrame):
 
 
 @dataclass
-class RealtimeServiceMetadataFrame(ServiceMetadataFrame):
-    """Metadata announcing a realtime (speech-to-speech) LLM service.
-
-    Broadcast by realtime LLM services at pipeline start so downstream
-    processors — notably ``LLMContextAggregatorPair`` — can detect that
-    a realtime service is in the pipeline. The aggregator uses this to
-    surface a one-time recommendation to opt in to
-    ``realtime_service_mode=True`` when it hasn't been configured.
+class LLMServiceMetadataFrame(ServiceMetadataFrame):
+    """Metadata broadcast by an LLM service at pipeline start.
 
     Parameters:
-        emits_user_turn_frames: Whether this service is currently
-            configured to emit ``UserStartedSpeakingFrame`` /
-            ``UserStoppedSpeakingFrame`` from server-side turn signals.
-            False for services with no server-side turn signals at all
-            (e.g. Gemini Live, AWS Nova Sonic, Ultravox), and also
-            False for services whose server-side turn detection has
-            been disabled by configuration (e.g. OpenAI Realtime with
-            ``turn_detection=False``).
+        is_realtime_service: Whether the broadcasting service is a realtime
+            (speech-to-speech) LLM service.
     """
 
-    emits_user_turn_frames: bool = True
+    is_realtime_service: bool = False
 
 
 @dataclass
@@ -2075,6 +2070,25 @@ class FunctionCallInProgressFrame(ControlFrame, UninterruptibleFrame):
 
 
 @dataclass
+class NodeTransitionStartedFrame(ControlFrame, UninterruptibleFrame):
+    """Frame signaling that a workflow-control transition is imminent.
+
+    This ordered, uninterruptible frame is emitted before a tool changes nodes,
+    ends the call, transfers it, or performs equivalent control activity.
+    Processors can use it to finish handoff work, such as committing pending
+    user transcript aggregation to the shared LLM context.
+
+    Parameters:
+        function_calls: Transition function calls that are about to execute.
+        context_aggregation_event: Optional acknowledgement set after pending
+            user transcript aggregation has been committed.
+    """
+
+    function_calls: Sequence[FunctionCallFromLLM]
+    context_aggregation_event: asyncio.Event | None = field(default=None, compare=False)
+
+
+@dataclass
 class VisionFullResponseStartFrame(LLMFullResponseStartFrame):
     """Frame indicating the beginning of a vision model response.
 
@@ -2228,6 +2242,16 @@ class FilterEnableFrame(FilterControlFrame):
     """
 
     enable: bool
+
+
+@dataclass
+class AudioBufferStartRecordingFrame(ControlFrame, UninterruptibleFrame):
+    """Frame instructing audio buffer processors to start recording."""
+
+
+@dataclass
+class AudioBufferStopRecordingFrame(ControlFrame, UninterruptibleFrame):
+    """Frame instructing audio buffer processors to stop recording and flush."""
 
 
 @dataclass
