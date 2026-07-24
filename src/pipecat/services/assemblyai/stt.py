@@ -355,16 +355,6 @@ class AssemblyAISTTService(WebsocketSTTService):
                 f"or use model='u3-rt-pro'."
             )
 
-        if default_settings.prompt is not None and default_settings.keyterms_prompt is not None:
-            raise ValueError(
-                "The prompt and keyterms_prompt parameters cannot be used in the same request. "
-                "Please choose either one or the other based on your use case. When you use "
-                "keyterms_prompt, your boosted words are appended to the default prompt automatically. "
-                "Or to boost within prompt: <prompt> + Make sure to boost the words <keyterms> "
-                "in the audio. "
-                "For more info go to: https://www.assemblyai.com/docs/streaming/universal-3-pro"
-            )
-
         if default_settings.prompt is not None:
             logger.warning(
                 "Custom prompt detected. Prompting is a beta feature. We recommend testing "
